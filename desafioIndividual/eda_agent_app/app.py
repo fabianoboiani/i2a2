@@ -21,17 +21,19 @@ with st.sidebar:
     up = st.file_uploader("Escolha um arquivo .csv", type=["csv"])
     st.divider()
     st.header("LLM")
-    llm_model = st.selectbox("Modelo", ["gpt-4o-mini", "gpt-4o"], index=0)
-    temperature = st.slider("Temperatura", 0.0, 1.0, 0.0, 0.1)
-    st.caption("Defina OPENAI_API_KEY no ambiente.")
+    st.subheader('Modelo')
+    #llm_model = st.selectbox("Modelo", ["gpt-4o-mini", "gpt-4o"], index=0)
+    llm_model = "gpt-4o-mini"
+    #temperature = st.slider("Temperatura", 0.0, 1.0, 0.0, 0.1)
+    temperature = 0.0
+    st.caption("OpenIA gpt-4o-mini")
     st.divider()
     st.header("Conclusões críticas")
     enable_critic = st.checkbox("Gerar conclusões críticas (pós-execução)", value=True)
     st.divider()
     st.header("Memória")
     show_memory = st.checkbox("Mostrar conclusões salvas", value=True)
-    st.caption("Use o botão abaixo para um resumo sem executar código.")
-    summarize_now = st.button("🧠 Resumir conclusões (sem executar código)")
+
 
 # =========================
 # Estado
@@ -114,10 +116,15 @@ if df is not None:
 
     mem = DatasetMemory.load(dataset_id)
 
-    if st.button("🧹 Limpar conclusões deste dataset"):
-        mem.conclusions = []
-        mem.save()
-        st.success("Conclusões apagadas.")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        summarize_now = st.button("🧠 Resumir conclusões (sem executar código)")
+    with col2:
+        if st.button("🧹 Limpar conclusões deste dataset"):
+            mem.conclusions = []
+            mem.save()
+            st.success("Conclusões apagadas.")
+    st.caption("Use o botão acima para um resumo sem executar código.")
 
     if show_memory:
         with st.expander("Conclusões (memória por dataset)"):
