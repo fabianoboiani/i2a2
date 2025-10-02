@@ -1,0 +1,8 @@
+[build]
+builder = "DOCKERFILE"
+
+[deploy]
+# startCommand é redundante com o CMD do Dockerfile; mantenha por clareza.
+startCommand = "bash -c 'poetry run streamlit run app.py --server.address=0.0.0.0 --server.port=$PORT'"
+restartPolicyType = "ON_FAILURE"
+healthcheckPath = "/"

@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "eda-agent-app-codegen"
+version = "1.0.0"
+description = "EDA agent via LLM code generation and secure execution."
+authors = ["You <you@example.com>"]
+readme = "README.md"
+packages = [{ include = "eda_agent", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+pandas = "^2.2.2"
+numpy = "^1.26.4"
+matplotlib = "^3.8.4"
+streamlit = "^1.37.0"
+langchain = "^0.2.14"
+langchain-openai = "^0.1.22"
+python-dotenv = "^1.0.1"
+chardet = "^5.2.0"
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.5"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
