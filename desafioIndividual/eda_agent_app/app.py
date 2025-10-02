@@ -110,7 +110,7 @@ if df is not None:
     n_total, n_cols = df.shape
     n_show = min(n_total, 1000)
     st.caption(f"{n_total} linhas × {n_cols} colunas • Mostrando {n_show} linha(s)")
-    st.dataframe(df.head(n_show), use_container_width=True)
+    st.dataframe(df.head(n_show), width='stretch')
 
     mem = DatasetMemory.load(dataset_id)
 
