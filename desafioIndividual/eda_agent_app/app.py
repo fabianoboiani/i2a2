@@ -2,14 +2,20 @@ import os, io, hashlib
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
+
 from src.eda_agent.state import dataset_id_from_bytes, DatasetMemory
-from src.eda_agent.agent_codegen import plan_and_execute
+from src.eda_agent.agents.codegen_agent import generate_and_execute, build_schema_hint, _format_history
+from src.eda_agent.agents.critic_agent import run_critic
+from src.eda_agent.agents.summary_agent import summarize_memory
 
 load_dotenv()
 
 st.set_page_config(page_title="EDA Agent – Explore seus dados", layout="wide")
 st.title("📊 EDA Agent – Explore seus dados")
 
+# =========================
+# Sidebar
+# =========================
 with st.sidebar:
     st.header("Upload do CSV")
     up = st.file_uploader("Escolha um arquivo .csv", type=["csv"])
@@ -24,36 +30,35 @@ with st.sidebar:
     st.divider()
     st.header("Memória")
     show_memory = st.checkbox("Mostrar conclusões salvas", value=True)
+    st.caption("Use o botão abaixo para um resumo sem executar código.")
+    summarize_now = st.button("🧠 Resumir conclusões (sem executar código)")
 
+# =========================
+# Estado
+# =========================
 if "dataset_id" not in st.session_state:
     st.session_state.dataset_id = None
 if "df" not in st.session_state:
     st.session_state.df = None
 
 # =========================
-# Leitura de CSV otimizada
+# Funções auxiliares de leitura
 # =========================
-SAMPLE_SIZE = 65536  # 64KB para detecção rápida
+SAMPLE_SIZE = 65536  # 64KB
 
 def _fast_hash(b: bytes) -> str:
-    # hash rápido para cache interno, se quiser usar
     return hashlib.blake2b(b, digest_size=16).hexdigest()
 
 def detect_encoding_sample(content: bytes) -> str:
-    """
-    Detecta encoding usando apenas um sample para não ficar lento.
-    Tenta chardet se disponível; senão: utf-8 -> cp1252.
-    """
     sample = content[:SAMPLE_SIZE]
     try:
-        import chardet  # opcional
+        import chardet
         res = chardet.detect(sample)
         enc = (res.get("encoding") or "").lower()
-        if enc in ("utf-8", "utf_8", "utf8"):
+        if enc.startswith("utf"):
             return "utf-8"
-        if enc in ("cp1252", "windows-1252", "latin-1", "iso-8859-1", "latin1"):
+        if "1252" in enc or "8859" in enc or "latin" in enc:
             return "cp1252"
-        # fallback razoável
         return "utf-8"
     except Exception:
         try:
@@ -63,52 +68,32 @@ def detect_encoding_sample(content: bytes) -> str:
             return "cp1252"
 
 def detect_separator_sample(content: bytes, encoding: str) -> str:
-    """
-    Decide entre ',' e ';' contando ocorrências no sample (sem engine python).
-    """
     text = content[:SAMPLE_SIZE].decode(encoding, errors="ignore").strip()
     return ";" if text.count(";") > text.count(",") else ","
 
 @st.cache_data(show_spinner=False)
 def read_csv_fast(file_bytes: bytes) -> pd.DataFrame:
-    """
-    Caminho rápido: engine 'c' com sep fixo e encoding detectado por sample.
-    Fallback: engine 'python' apenas se necessário.
-    """
     enc = detect_encoding_sample(file_bytes)
     sep = detect_separator_sample(file_bytes, enc)
-
     bio = io.BytesIO(file_bytes)
-
-    # Caminho feliz: engine C (mais rápido). Evite on_bad_lines aqui.
     try:
         return pd.read_csv(bio, sep=sep, encoding=enc, engine="c")
     except Exception:
-        # Tenta engine C com encoding alternativo
-        alt_enc = "cp1252" if enc == "utf-8" else "utf-8"
         bio.seek(0)
-        try:
-            return pd.read_csv(bio, sep=sep, encoding=alt_enc, engine="c")
-        except Exception:
-            # Fallback: engine python (aceita on_bad_lines)
-            bio.seek(0)
-            try:
-                return pd.read_csv(bio, sep=sep, encoding=enc, engine="python", on_bad_lines="skip")
-            except Exception:
-                bio.seek(0)
-                return pd.read_csv(bio, sep=sep, encoding=alt_enc, engine="python", on_bad_lines="skip")
+        return pd.read_csv(bio, sep=sep, encoding=enc, engine="python", on_bad_lines="skip")
 
 # =========================
-# Upload e parsing
+# Upload
 # =========================
 if up:
     content = up.read()
     st.session_state.dataset_id = dataset_id_from_bytes(content)
     try:
-        df_raw = read_csv_fast(content)  # usa cache por conteúdo
-        df_clean = df_raw.dropna(how="all").dropna(axis=1, how="all")
-        df_clean.columns = df_clean.columns.str.strip()
-        st.session_state.df = df_clean
+        df = read_csv_fast(content)
+        # limpeza extra
+        df = df.dropna(how="all").dropna(axis=1, how="all")
+        df.columns = df.columns.str.strip()
+        st.session_state.df = df
         st.success(f"Dataset carregado. ID: {st.session_state.dataset_id}")
     except Exception as e:
         st.error(f"Falha ao ler o CSV: {e}")
@@ -122,20 +107,13 @@ dataset_id = st.session_state.dataset_id
 # =========================
 if df is not None:
     st.write("Amostra dos dados:")
-
-    n_total = len(df.index)
-    n_cols = len(df.columns)
+    n_total, n_cols = df.shape
     n_show = min(n_total, 1000)
-
-    if n_total == 0:
-        st.warning("O CSV foi lido, mas não há linhas (0 registros). Verifique separador e encoding.")
-    else:
-        st.caption(f"{n_total} linhas × {n_cols} colunas • Mostrando {n_show} linha(s)")
-        st.dataframe(df.head(n_show), use_container_width=True)
+    st.caption(f"{n_total} linhas × {n_cols} colunas • Mostrando {n_show} linha(s)")
+    st.dataframe(df.head(n_show), use_container_width=True)
 
     mem = DatasetMemory.load(dataset_id)
 
-    # Botão para limpar conclusões
     if st.button("🧹 Limpar conclusões deste dataset"):
         mem.conclusions = []
         mem.save()
@@ -158,13 +136,26 @@ if df is not None:
     st.subheader("Faça uma pergunta")
     question = st.text_input("Ex.: 'Média e histograma da coluna idade' ou 'Correlação entre renda e gasto'")
 
-    if st.button("Perguntar", type="primary") and question:
+    # resumo sem execução
+    wants_summary = False
+    if question:
+        qlow = question.strip().lower()
+        wants_summary = any(k in qlow for k in [
+            "resumo das conclusões", "resumir conclusões", "conclusão geral", "síntese", "sumário"
+        ])
+
+    if summarize_now or wants_summary:
+        with st.spinner("Gerando resumo executivo (sem executar código)..."):
+            summary = summarize_memory(mem, llm_model=llm_model, temperature=0.2)
+        st.subheader("🧠 Síntese do que já foi aprendido até agora")
+        st.markdown(summary or "_Sem conteúdo para resumir ainda._")
+
+    elif st.button("Perguntar", type="primary") and question:
         with st.spinner("Gerando código e executando..."):
-            out = plan_and_execute(
+            out = generate_and_execute(
                 question, df, mem,
                 llm_model=llm_model,
                 temperature=temperature,
-                enable_critic=enable_critic,
             )
         st.markdown(out.get("text") or "")
         if out.get("stdout"):
@@ -174,9 +165,27 @@ if df is not None:
             st.image(img_bytes)
         with st.expander("Código gerado"):
             st.code(out.get("code") or "")
-        if enable_critic and (out.get("critic") or "").strip():
+
+        if enable_critic:
+            with st.spinner("Gerando conclusões críticas..."):
+                hint = build_schema_hint(df)
+                history_snippet = _format_history(mem.recent_turns(k=5))
+                critic_text = run_critic(
+                    question=question,
+                    history_snippet=history_snippet,
+                    schema_hint=hint,
+                    result_text=out.get("text",""),
+                    stdout_tail=out.get("stdout","") or "",
+                    llm_model=llm_model,
+                    temperature=0.2,
+                )
+                for line in critic_text.splitlines():
+                    s = line.strip()
+                    if s.startswith(("-", "•")) and len(s) > 2:
+                        mem.add_conclusion(s.lstrip("-• ").strip())
             st.divider()
             st.subheader("🧠 Conclusões críticas")
-            st.markdown(out["critic"])
+            st.markdown(critic_text)
+
 else:
     st.info("Carregue um CSV para começar.")
